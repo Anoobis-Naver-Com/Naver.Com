@@ -110,7 +110,7 @@ export default async function handler(request) {
             fetchShortAndMid(encoded, kst, grid, lat, lon),
             fetchAstro(encoded, kst, lat, lon),
             fetchMoon(encoded, kst),
-            areaNo ? fetchUV(encoded, kst, areaNo) : Promise.resolve(null),
+            fetchUV(encoded, kst, areaNo),
         ]);
 
         return new Response(JSON.stringify({
@@ -279,8 +279,9 @@ async function fetchMoon(encoded, kst) {
     try {
         res  = await fetch(url);
         text = await res.text();
-    } catch (e) { return null; }
-    if (!res.ok || !text.includes('<item>')) return null;
+    } catch (e) { return { error: e.message }; }
+    if (!res.ok) return { error: `API 오류 (${res.status})` };
+    if (!text.includes('<item>')) return { error: '데이터 없음' };
 
     // 오늘 날짜에 해당하는 item 찾기
     const items = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(m => m[1]);
@@ -293,7 +294,7 @@ async function fetchMoon(encoded, kst) {
         }
     }
 
-    if (!todayItem) return null;
+    if (!todayItem) return { error: '오늘 날짜 데이터 없음' };
 
     const get = (tag) => {
         const m = todayItem.match(new RegExp(`<${tag}>([^<]*)<\/${tag}>`));
@@ -328,6 +329,8 @@ async function fetchMoon(encoded, kst) {
 
 // ─── 기상청 자외선 지수 (3.0) ──────────────────────────────────────────────
 async function fetchUV(encoded, kst, areaNo) {
+    if (!areaNo) return { error: '행정구역 코드 미입력' };
+
     // time: YYYYMMDDHH (현재 시각 기준, 정시 단위)
     const time = `${kst.yyyymmdd}${kst.hour}`;
     const url = `https://apis.data.go.kr/1360000/LivingWthrIdxServiceV3/getUVIdxV3`
@@ -337,13 +340,14 @@ async function fetchUV(encoded, kst, areaNo) {
     try {
         res  = await fetch(url);
         const text = await res.text();
-        if (!res.ok) return null;
+        if (!res.ok) return { error: `API 오류 (${res.status})` };
         data = JSON.parse(text);
-    } catch (e) { return null; }
-    const item = data?.response?.body?.items?.item?.[0];
-    if (!item) return null;
+    } catch (e) { return { error: e.message }; }
 
-    const uvVal = parseFloat(item.h0 ?? item.h3 ?? 0);  // 현재 시각 또는 가장 가까운 값
+    const item = data?.response?.body?.items?.item?.[0];
+    if (!item) return { error: '데이터 없음' };
+
+    const uvVal = parseFloat(item.h0 ?? item.h3 ?? 0);
 
     // 5단계
     let level, label, color;
