@@ -274,35 +274,41 @@ async function fetchAstro(encoded, kst, lat, lon) {
 // ─── 한국에너지기술연구원 실시간 홍반자외선 ────────────────────────────────────
 // 천리안 위성 기반 격자 데이터 → 위경도 직접 조회 (관측소 불필요)
 async function fetchUV(encoded, kst, lat, lon) {
-    // 날짜 파라미터: YYYYMMDD
+    // End Point: https://apis.data.go.kr/B551184/UlvryService
+    // 파라미터: date(YYYYMMDD), time(HH00), lat, lon
     const date = kst.yyyymmdd;
-    // 시간 파라미터: 현재 시 (HH00 형식, 1시간 단위)
-    const hour = kst.hour + '00';
+    const hour = kst.hour + '00';  // "1100" 형식
 
-    const url = `https://apis.data.go.kr/B552895/rltmUlvryInfo/getRltmUlvryInfo`
-        + `?serviceKey=${encoded}&dataType=JSON`
+    const url = `https://apis.data.go.kr/B551184/UlvryService/getRltmUlvryInfo`
+        + `?serviceKey=${encoded}&dataType=JSON&numOfRows=1&pageNo=1`
         + `&date=${date}&time=${hour}`
         + `&lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
 
     try {
         const res  = await fetch(url);
-        const data = await res.json();
-        const items = data?.response?.body?.items?.item || [];
-        const item  = Array.isArray(items) ? items[0] : items;
+        const text = await res.text();
 
-        if (!item) return { index: null, level: null, levelName: null };
+        let data;
+        try { data = JSON.parse(text); }
+        catch { return { index: null, level: null, levelName: null, debug: 'JSON parse fail: ' + text.slice(0, 200) }; }
 
-        // uv 지수값 (필드명: ulvryVal 또는 uvi)
-        const raw = item.ulvryVal ?? item.uvi ?? item.uvIndex ?? null;
+        const items = data?.response?.body?.items?.item;
+        // item이 배열일 수도, 단일 객체일 수도 있음
+        const item = Array.isArray(items) ? items[0] : (items || null);
+
+        if (!item) return { index: null, level: null, levelName: null, debug: 'no item: ' + text.slice(0, 200) };
+
+        // KIER 홍반자외선 응답 필드명 후보 (API 명세 확인 전 다중 대응)
+        const raw = item.ulvryVal ?? item.ulvryIndex ?? item.uvIndex ?? item.uvi ?? item.value ?? null;
         const uvi = raw !== null ? parseFloat(raw) : null;
 
         return {
-            index:     uvi !== null ? Math.round(uvi * 10) / 10 : null,
-            level:     uvi !== null ? uvLevel(uvi) : null,
-            levelName: uvi !== null ? uvLevelName(uvi) : null,
+            index:     uvi !== null && !isNaN(uvi) ? Math.round(uvi * 10) / 10 : null,
+            level:     uvi !== null && !isNaN(uvi) ? uvLevel(uvi) : null,
+            levelName: uvi !== null && !isNaN(uvi) ? uvLevelName(uvi) : null,
         };
-    } catch {
-        return { index: null, level: null, levelName: null };
+    } catch(e) {
+        return { index: null, level: null, levelName: null, debug: e.message };
     }
 }
 
