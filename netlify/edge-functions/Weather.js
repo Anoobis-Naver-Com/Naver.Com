@@ -3,7 +3,7 @@
 // API 2: 기상청 단기예보 (3일) + 중기예보 (4~8일)
 // API 3: 한국천문연구원 - 일출/일몰/월출/월몰
 // API 4: 한국천문연구원 - 월령정보
-// API 5: 기상청 생활기상지수 - 자외선지수 (V4)
+// API 5: 기상청 생활기상지수 - 자외선지수 (3.0)
 
 const HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -275,8 +275,12 @@ async function fetchMoon(encoded, kst) {
     const url = `https://apis.data.go.kr/B090041/openapi/service/LunPhInfoService/getLunPhList`
         + `?serviceKey=${encoded}&solYear=${kst.year}&solMonth=${kst.month}`;
 
-    const res  = await fetch(url);
-    const text = await res.text();
+    let res, text;
+    try {
+        res  = await fetch(url);
+        text = await res.text();
+    } catch (e) { return null; }
+    if (!res.ok || !text.includes('<item>')) return null;
 
     // 오늘 날짜에 해당하는 item 찾기
     const items = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(m => m[1]);
@@ -322,15 +326,20 @@ async function fetchMoon(encoded, kst) {
     };
 }
 
-// ─── 기상청 자외선 지수 (V4) ─────────────────────────────────────────────────
+// ─── 기상청 자외선 지수 (3.0) ──────────────────────────────────────────────
 async function fetchUV(encoded, kst, areaNo) {
     // time: YYYYMMDDHH (현재 시각 기준, 정시 단위)
     const time = `${kst.yyyymmdd}${kst.hour}`;
-    const url = `https://apis.data.go.kr/1360000/LivingWthrIdxServiceV4/getUVIdxV4`
+    const url = `https://apis.data.go.kr/1360000/LivingWthrIdxServiceV3/getUVIdxV3`
         + `?serviceKey=${encoded}&areaNo=${areaNo}&time=${time}&dataType=JSON`;
 
-    const res  = await fetch(url);
-    const data = await res.json();
+    let res, data;
+    try {
+        res  = await fetch(url);
+        const text = await res.text();
+        if (!res.ok) return null;
+        data = JSON.parse(text);
+    } catch (e) { return null; }
     const item = data?.response?.body?.items?.item?.[0];
     if (!item) return null;
 
