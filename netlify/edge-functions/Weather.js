@@ -1,9 +1,10 @@
 // netlify/edge-functions/Weather.js
+// 공공데이터포털 API 키는 로컬 HTML에서 전달받습니다 (깃허브에 키 없음)
 // API 1: 기상청 초단기실황 (현재 날씨)
 // API 2: 기상청 단기예보 (3일) + 중기예보 (4~8일)
 // API 3: 한국천문연구원 - 일출/일몰/월출/월몰
-// API 4: 한국천문연구원 - 월령정보
-// API 5: 기상청 생활기상지수 - 자외선지수 (3.0)
+// API 4: 한국에너지기술연구원 - 실시간 홍반자외선 (위치 기반 자동 선택)
+// CALC: 달 월령 · 채워짐(%) - 천문 공식으로 직접 계산
 
 const HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -92,10 +93,9 @@ export default async function handler(request) {
 
     const url = new URL(request.url);
     const p   = url.searchParams;
-    const key    = p.get('key')    ? p.get('key').replace(/[^\x00-\x7F]/g, '') : '';
-    const lat    = parseFloat(p.get('lat'));
-    const lon    = parseFloat(p.get('lon'));
-    const areaNo = p.get('areaNo') ? p.get('areaNo').trim() : '';
+    const key = p.get('key') ? p.get('key').replace(/[^\x00-\x7F]/g, '') : '';
+    const lat = parseFloat(p.get('lat'));
+    const lon = parseFloat(p.get('lon'));
 
     if (!key) return errRes(400, '공공데이터포털 API 키(key)가 없습니다.');
     if (isNaN(lat) || isNaN(lon)) return errRes(400, 'lat(위도)와 lon(경도) 파라미터가 필요합니다.');
@@ -105,20 +105,21 @@ export default async function handler(request) {
     const encoded = encodeURIComponent(key);
 
     try {
-        const [ultraRes, shortRes, astroRes, moonRes, uvRes] = await Promise.all([
+        const [ultraRes, shortRes, astroRes, uvRes] = await Promise.all([
             fetchUltra(encoded, kst, grid),
             fetchShortAndMid(encoded, kst, grid, lat, lon),
             fetchAstro(encoded, kst, lat, lon),
-            fetchMoon(encoded, kst),
-            fetchUV(encoded, kst, areaNo),
+            fetchUV(encoded, kst, lat, lon),
         ]);
+
+        const moonInfo = calcMoonPhase(kst);
 
         return new Response(JSON.stringify({
             current:  ultraRes,
             forecast: shortRes,
             astro:    astroRes,
-            moon:     moonRes,
             uv:       uvRes,
+            moon:     moonInfo,
             grid:     grid,
             kst:      kst,
         }), { status: 200, headers: HEADERS });
@@ -270,94 +271,94 @@ async function fetchAstro(encoded, kst, lat, lon) {
     };
 }
 
-// ─── 한국천문연구원 월령 ─────────────────────────────────────────────────────
-async function fetchMoon(encoded, kst) {
-    const url = `https://apis.data.go.kr/B090041/openapi/service/LunPhInfoService/getLunPhList`
-        + `?serviceKey=${encoded}&solYear=${kst.year}&solMonth=${kst.month}`;
+// ─── 한국에너지기술연구원 실시간 홍반자외선 ────────────────────────────────────
+// 천리안 위성 기반 격자 데이터 → 위경도 직접 조회 (관측소 불필요)
+async function fetchUV(encoded, kst, lat, lon) {
+    // 날짜 파라미터: YYYYMMDD
+    const date = kst.yyyymmdd;
+    // 시간 파라미터: 현재 시 (HH00 형식, 1시간 단위)
+    const hour = kst.hour + '00';
 
-    let res, text;
+    const url = `https://apis.data.go.kr/B552895/rltmUlvryInfo/getRltmUlvryInfo`
+        + `?serviceKey=${encoded}&dataType=JSON`
+        + `&date=${date}&time=${hour}`
+        + `&lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
+
     try {
-        res  = await fetch(url);
-        text = await res.text();
-    } catch (e) { return { error: e.message }; }
-    if (!res.ok) return { error: `API 오류 (${res.status})` };
-    if (!text.includes('<item>')) return { error: '데이터 없음' };
+        const res  = await fetch(url);
+        const data = await res.json();
+        const items = data?.response?.body?.items?.item || [];
+        const item  = Array.isArray(items) ? items[0] : items;
 
-    // 오늘 날짜에 해당하는 item 찾기
-    const items = [...text.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(m => m[1]);
-    let todayItem = null;
-    for (const item of items) {
-        const solDay = item.match(/<solDay>(\d+)<\/solDay>/)?.[1];
-        if (solDay && solDay.padStart(2, '0') === kst.day) {
-            todayItem = item;
-            break;
-        }
+        if (!item) return { index: null, level: null, levelName: null };
+
+        // uv 지수값 (필드명: ulvryVal 또는 uvi)
+        const raw = item.ulvryVal ?? item.uvi ?? item.uvIndex ?? null;
+        const uvi = raw !== null ? parseFloat(raw) : null;
+
+        return {
+            index:     uvi !== null ? Math.round(uvi * 10) / 10 : null,
+            level:     uvi !== null ? uvLevel(uvi) : null,
+            levelName: uvi !== null ? uvLevelName(uvi) : null,
+        };
+    } catch {
+        return { index: null, level: null, levelName: null };
     }
-
-    if (!todayItem) return { error: '오늘 날짜 데이터 없음' };
-
-    const get = (tag) => {
-        const m = todayItem.match(new RegExp(`<${tag}>([^<]*)<\/${tag}>`));
-        return m ? m[1].trim() : null;
-    };
-
-    const lunAge = parseFloat(get('lunAge') || '0');
-    // 조명률(%) 계산: 월령 기반 코사인 공식
-    const illumination = Math.round((1 - Math.cos((lunAge / 29.53) * 2 * Math.PI)) / 2 * 100);
-
-    // 달 위상 이름
-    let phaseName = '초승달';
-    if (lunAge < 1.5)       phaseName = '삭 (新月)';
-    else if (lunAge < 6.5)  phaseName = '초승달';
-    else if (lunAge < 8.5)  phaseName = '상현달';
-    else if (lunAge < 13.5) phaseName = '상현→보름';
-    else if (lunAge < 15.5) phaseName = '망 (보름달)';
-    else if (lunAge < 20.5) phaseName = '보름→하현';
-    else if (lunAge < 22.5) phaseName = '하현달';
-    else if (lunAge < 28.0) phaseName = '그믐달';
-    else                    phaseName = '삭 (그믐)';
-
-    return {
-        lunAge:       lunAge,
-        illumination: illumination,
-        phaseName:    phaseName,
-        lunName:      get('lunName'),   // 음력 날 이름 (예: 초하루, 보름 등)
-        lunDay:       get('lunDay'),    // 음력 일
-        lunMonth:     get('lunMonth'),  // 음력 월
-    };
 }
 
-// ─── 기상청 자외선 지수 (3.0) ──────────────────────────────────────────────
-async function fetchUV(encoded, kst, areaNo) {
-    if (!areaNo) return { error: '행정구역 코드 미입력' };
+// 자외선 5단계 (WHO/환경부 기준)
+// 1: 낮음(0~2), 2: 보통(3~5), 3: 높음(6~7), 4: 매우높음(8~10), 5: 위험(11+)
+function uvLevel(uvi) {
+    if (uvi <= 2)  return 1;
+    if (uvi <= 5)  return 2;
+    if (uvi <= 7)  return 3;
+    if (uvi <= 10) return 4;
+    return 5;
+}
+function uvLevelName(uvi) {
+    return ['낮음','보통','높음','매우높음','위험'][uvLevel(uvi) - 1];
+}
 
-    // time: YYYYMMDDHH (현재 시각 기준, 정시 단위)
-    const time = `${kst.yyyymmdd}${kst.hour}`;
-    const url = `https://apis.data.go.kr/1360000/LivingWthrIdxServiceV3/getUVIdxV3`
-        + `?serviceKey=${encoded}&areaNo=${areaNo}&time=${time}&dataType=JSON`;
+// ─── 달 월령 · 채워짐(%) 계산 ────────────────────────────────────────────────
+// Jean Meeus "Astronomical Algorithms" 기반
+// 한국천문연구원이 사용하는 것과 동일한 Julian Day + 시노딕 주기 방식
+function calcMoonPhase(kst) {
+    const y  = parseInt(kst.year);
+    const mo = parseInt(kst.month);
+    const d  = parseInt(kst.day);
+    const h  = parseInt(kst.hour);
 
-    let res, data;
-    try {
-        res  = await fetch(url);
-        const text = await res.text();
-        if (!res.ok) return { error: `API 오류 (${res.status})` };
-        data = JSON.parse(text);
-    } catch (e) { return { error: e.message }; }
+    // Julian Day Number 계산
+    const A  = Math.floor((14 - mo) / 12);
+    const Y  = y + 4800 - A;
+    const M  = mo + 12 * A - 3;
+    const JDN = d + Math.floor((153 * M + 2) / 5) + 365 * Y
+              + Math.floor(Y / 4) - Math.floor(Y / 100) + Math.floor(Y / 400) - 32045;
+    const JD = JDN + (h - 12) / 24.0;  // 정오 기준 보정
 
-    const item = data?.response?.body?.items?.item?.[0];
-    if (!item) return { error: '데이터 없음' };
+    // 기준 신월(New Moon): 2000년 1월 6일 18:14 UTC → JD 2451550.1
+    const KNOWN_NEW_MOON_JD = 2451550.1;
+    const SYNODIC = 29.53058867;        // 삭망 주기(일)
 
-    const uvVal = parseFloat(item.h0 ?? item.h3 ?? 0);
+    const daysSinceNew = (JD - KNOWN_NEW_MOON_JD) % SYNODIC;
+    const age = daysSinceNew < 0 ? daysSinceNew + SYNODIC : daysSinceNew;  // 0~29.53
 
-    // 5단계
-    let level, label, color;
-    if      (uvVal <= 2)  { level = 1; label = '낮음';     color = '#22c55e'; }
-    else if (uvVal <= 5)  { level = 2; label = '보통';     color = '#eab308'; }
-    else if (uvVal <= 7)  { level = 3; label = '높음';     color = '#f97316'; }
-    else if (uvVal <= 10) { level = 4; label = '매우높음'; color = '#ef4444'; }
-    else                  { level = 5; label = '위험';     color = '#7c3aed'; }
+    // 채워짐(illumination) %: 코사인 근사
+    const illumination = Math.round((1 - Math.cos(2 * Math.PI * age / SYNODIC)) / 2 * 100);
 
-    return { uvVal, level, label, color };
+    // 달 이름 (8분류)
+    const phaseNames = ['삭(신월)','초승달','상현달','차오르는 볼록달','망(보름달)','이지러지는 볼록달','하현달','그믐달'];
+    const phaseIdx   = Math.floor((age / SYNODIC) * 8) % 8;
+
+    // 이모지
+    const phaseEmoji = ['🌑','🌒','🌓','🌔','🌕','🌖','🌗','🌘'];
+
+    return {
+        age:          Math.round(age * 10) / 10,   // 월령 (소수 1자리)
+        illumination: illumination,                  // 채워짐 %
+        phaseName:    phaseNames[phaseIdx],
+        phaseEmoji:   phaseEmoji[phaseIdx],
+    };
 }
 
 // ─── 헬퍼 ─────────────────────────────────────────────────────────────────────
