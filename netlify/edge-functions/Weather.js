@@ -201,7 +201,7 @@ async function fetchShortAndMid(encoded, kst, grid, lat, lon) {
     const midTaItem   = midTaRes?.response?.body?.items?.item?.[0] || {};
 
     const days = [];
-    for (let i = 0; i <= 7; i++) {
+    for (let i = 0; i <= 6; i++) {
         const dt    = addDays(kst.yyyymmdd, i);
         const label = getDayLabel(dt, kst.yyyymmdd);
 
