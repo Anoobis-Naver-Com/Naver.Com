@@ -6,26 +6,27 @@
 
 import { getStore } from '@netlify/blobs';
 
-const LATEST_KEY = 'weather-latest';
-
-async function saveLatest(payload) {
-    try {
-        const store = getStore('location-cache');
-        await store.setJSON(LATEST_KEY, {
-            data: payload,
-            savedAt: new Date().toISOString(),
-        });
-    } catch (e) {
-        // 저장 실패는 무시(응답 자체는 정상적으로 반환되어야 함)
-    }
-}
-
 const HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Content-Type': 'application/json',
 };
+
+// 저장된 최신 날씨 결과를 Netlify Blobs에 기록한다.
+// (데스크탑 폴링용 /api/weather-latest 엔드포인트가 이 값을 읽는다.)
+// 저장이 실패해도 원래 응답에는 영향을 주지 않도록 항상 try-catch로 감싼다.
+async function saveLatestWeather(payload) {
+    try {
+        const store = getStore({ name: 'location-cache' });
+        await store.setJSON('weather-latest', {
+            data: payload,
+            updatedAt: new Date().toISOString(),
+        });
+    } catch (e) {
+        // Blobs 저장 실패는 조용히 무시한다 (모바일 응답 자체는 정상 반환되어야 함).
+    }
+}
 
 // ─── 기상청 격자 변환 (위경도 → XY) ─────────────────────────────────────────
 function latLonToGrid(lat, lon) {
@@ -125,15 +126,15 @@ export default async function handler(request) {
             fetchAstro(encoded, kst, lat, lon),
         ]);
 
-        const payload = {
+        const responsePayload = {
             current:  ultraRes,
             forecast: shortRes,
             astro:    astroRes,
             grid:     grid,
             kst:      kst,
         };
-        await saveLatest(payload);
-        return new Response(JSON.stringify(payload), { status: 200, headers: HEADERS });
+        await saveLatestWeather(responsePayload);
+        return new Response(JSON.stringify(responsePayload), { status: 200, headers: HEADERS });
 
     } catch (e) {
         return errRes(500, '서버 오류: ' + e.message);

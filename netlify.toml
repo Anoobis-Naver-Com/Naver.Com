@@ -3,5 +3,5 @@
   path = "/api/weather"
 
 [[edge_functions]]
-  function = "Weather-Latest"
+  function = "WeatherLatest"
   path = "/api/weather-latest"
