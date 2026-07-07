@@ -1,3 +1,7 @@
 [[edge_functions]]
   function = "Weather"
   path = "/api/weather"
+
+[[edge_functions]]
+  function = "Weather-Latest"
+  path = "/api/weather-latest"
