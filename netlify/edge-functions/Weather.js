@@ -4,7 +4,21 @@
 // API 2: 기상청 단기예보 (3일) + 중기예보 (4~8일)
 // API 3: 한국천문연구원 - 일출/일몰/월출/월몰
 
-import { getStore } from "@netlify/blobs";
+import { getStore } from '@netlify/blobs';
+
+const LATEST_KEY = 'weather-latest';
+
+async function saveLatest(payload) {
+    try {
+        const store = getStore('location-cache');
+        await store.setJSON(LATEST_KEY, {
+            data: payload,
+            savedAt: new Date().toISOString(),
+        });
+    } catch (e) {
+        // 저장 실패는 무시(응답 자체는 정상적으로 반환되어야 함)
+    }
+}
 
 const HEADERS = {
     'Access-Control-Allow-Origin': '*',
@@ -12,21 +26,6 @@ const HEADERS = {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Content-Type': 'application/json',
 };
-
-const LATEST_KEY = "latest";
-
-async function saveLatestWeather(payload) {
-    try {
-        const store = getStore("weather-cache");
-        await store.setJSON(LATEST_KEY, {
-            ...payload,
-            savedAt: Date.now(),
-        });
-    } catch (e) {
-        // 저장 실패는 원래 응답 흐름을 막지 않는다 (best-effort 캐시).
-        console.error("weather-cache 저장 실패:", e && e.message);
-    }
-}
 
 // ─── 기상청 격자 변환 (위경도 → XY) ─────────────────────────────────────────
 function latLonToGrid(lat, lon) {
@@ -126,15 +125,15 @@ export default async function handler(request) {
             fetchAstro(encoded, kst, lat, lon),
         ]);
 
-        const responsePayload = {
+        const payload = {
             current:  ultraRes,
             forecast: shortRes,
             astro:    astroRes,
             grid:     grid,
             kst:      kst,
         };
-        await saveLatestWeather(responsePayload);
-        return new Response(JSON.stringify(responsePayload), { status: 200, headers: HEADERS });
+        await saveLatest(payload);
+        return new Response(JSON.stringify(payload), { status: 200, headers: HEADERS });
 
     } catch (e) {
         return errRes(500, '서버 오류: ' + e.message);
